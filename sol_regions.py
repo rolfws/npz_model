@@ -65,6 +65,7 @@ def jac_alt_prange(params, Ps, Zs, N):
 def Pi_mm_ranges_i(params, i):
     Pc = params["delta"] * params["K"] * params["r"] / (params["gamma"] * params["g"] - params["delta"]) # [N,M] / [M]
     N = params["lambda"][..., i] * params["k"][..., i] / (params["mu"][..., i] - params["lambda"][..., i])
+    N = N.reshape(-1, 1)
     Zi = (
         (Pc[..., :i] / params["r"] + params["K"][..., :i])
         / params["g"][..., :i] 
@@ -193,6 +194,10 @@ def draw_solution_regions_bin(ax:plt.Axes, params:dict[str, float], progress_fra
             progress_frame=progress_frame
         )
     except Exception as e:
+        # Clean up any widgets in the progress frame
+        for widget in progress_frame.winfo_children():
+            widget.destroy()
+            
         ax.text(0.5, 0.5, str(e), horizontalalignment='center', verticalalignment='center', transform=ax.transAxes)
         ax.set_xticks([])
         ax.set_yticks([])
@@ -469,7 +474,7 @@ def setup_buttons(params:dict[str, float], draw:Callable, parent:tk.Frame):
         "• Green - Confirmed change\n"
         "• Red - Invalid input\n\n"
         "Shortcuts:\n"
-        "• Ctrl+Enter - Confirm and render\n\n"
+        "• Ctrl+Enter - To render\n\n"
     )
     help_label = tk.Label(param_frame, text=help_text, justify=tk.LEFT, anchor='w')
     help_label.pack(pady=10, padx=5)
