@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.contour import ContourSet
 import tkinter as tk
+from tkinter import ttk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
 from matplotlib.path import Path
@@ -99,7 +100,12 @@ def slice_indices(bool_arr:np.ndarray[bool]):
         
     return start, end
 
-def solution_regions_bin_search(params, fparam:str, fpmin:float, fpmax:float, smin:float, smax:float, n:int, m:int, brd="m"):
+def solution_regions_bin_search(params, fparam:str, fpmin:float, fpmax:float, smin:float, smax:float, n:int, m:int, brd="m", progress_frame:tk.Frame=None):
+    progress_bar = ttk.Progressbar(progress_frame, length=200, mode='determinate')
+    progress_bar.pack()
+    progress_label = tk.Label(progress_frame, text="Calculating regions...")
+    progress_label.pack()
+
     size_boundaries = np.linspace(smin, smax, n + 1, True)
     ds = np.diff(size_boundaries)
     match brd:
@@ -138,6 +144,9 @@ def solution_regions_bin_search(params, fparam:str, fpmin:float, fpmax:float, sm
     regions = []
     test_points = 5
     for i in range(n):
+        progress_bar['value'] = (i / n) * 100
+        progress_frame.update()
+            
         testvs = np.linspace(fpmin, fpmax, test_points * 2, endpoint=True)
         # In this loop we try to refine the boundaries in 3 search loops.
         for _ in range(3):
@@ -166,12 +175,23 @@ def solution_regions_bin_search(params, fparam:str, fpmin:float, fpmax:float, sm
         fine_range = np.linspace(testvs[0], testvs[-1], m, endpoint=True)
         fine_vals = Pi_mm_ranges_i(scaled_params | {freeparam: freeval_fn(fine_range)}, i)
         regions.append(fine_vals + (fine_range,))
+    
+    if progress_frame:
+        progress_bar.destroy()
+        progress_label.destroy()
+        
     return regions
 
-def draw_solution_regions_bin(ax:plt.Axes, params:dict[str, float]):
+def draw_solution_regions_bin(ax:plt.Axes, params:dict[str, float], progress_frame:tk.Frame):
     ax.cla()
     try:
-        regions = solution_regions_bin_search(params, params["param_select"], params["fmin"], params["fmax"], params["s_min"], params["s_max"], params["n"], params["m"])
+        regions = solution_regions_bin_search(
+            params, params["param_select"], 
+            params["fmin"], params["fmax"], 
+            params["s_min"], params["s_max"], 
+            params["n"], params["m"],
+            progress_frame=progress_frame
+        )
     except Exception as e:
         ax.text(0.5, 0.5, str(e), horizontalalignment='center', verticalalignment='center', transform=ax.transAxes)
         ax.set_xticks([])
@@ -477,6 +497,24 @@ def parameter_domains_interactive():
     fig = plt.Figure(tight_layout=False)
     ax = fig.add_subplot(111)
     
+    # Create the matplotlib canvas (at the top)
+    canvas = FigureCanvasTkAgg(fig, master=left_frame)
+    canvas_widget = canvas.get_tk_widget()
+    canvas_widget.pack(side=tk.TOP, fill=tk.BOTH, expand=1)
+    
+    # Create a frame for toolbar and progress bar
+    bottom_frame = tk.Frame(left_frame)
+    bottom_frame.pack(side=tk.BOTTOM, fill=tk.X)
+    
+    # Add navigation toolbar on the left side of bottom frame
+    toolbar = NavigationToolbar2Tk(canvas, bottom_frame)
+    toolbar.update()
+    toolbar.pack(side=tk.LEFT)
+
+    # Create progress frame on the right side of bottom frame
+    progress_frame = tk.Frame(bottom_frame)
+    progress_frame.pack(side=tk.RIGHT, fill=tk.X, padx=5)
+    
     params = {
         "mu_0": 5.9,
         "mu_scale": -0.75,
@@ -504,24 +542,13 @@ def parameter_domains_interactive():
     
     def draw():
         try:
-            ax.clear()  # Clear the axis properly
-            success, err = draw_solution_regions_bin(ax, params)
-            # Adjust the layout to fill the space
-            fig.canvas.draw_idle()  # Use draw_idle instead of draw
-            root.update_idletasks()  # Update the Tkinter event loop
+            ax.clear()
+            success, err = draw_solution_regions_bin(ax, params, progress_frame)
+            fig.canvas.draw_idle()
+            root.update_idletasks()
         except Exception as e:
             print(f"Error during draw: {e}")
     
-    # Create the matplotlib canvas
-    canvas = FigureCanvasTkAgg(fig, master=left_frame)
-    canvas_widget = canvas.get_tk_widget()
-    canvas_widget.pack(side=tk.TOP, fill=tk.BOTH, expand=1)
-    
-    # Add navigation toolbar
-    toolbar = NavigationToolbar2Tk(canvas, left_frame)
-    toolbar.update()
-    toolbar.pack(side=tk.BOTTOM, fill=tk.X)
-
     # Setup buttons in the right frame
     boxes = setup_buttons(params, draw, right_frame)
     
