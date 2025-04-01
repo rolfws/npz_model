@@ -197,7 +197,7 @@ def draw_solution_regions_bin(ax:plt.Axes, params:dict[str, float], progress_fra
         # Clean up any widgets in the progress frame
         for widget in progress_frame.winfo_children():
             widget.destroy()
-            
+
         ax.text(0.5, 0.5, str(e), horizontalalignment='center', verticalalignment='center', transform=ax.transAxes)
         ax.set_xticks([])
         ax.set_yticks([])
