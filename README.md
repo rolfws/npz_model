@@ -9,24 +9,24 @@ To start the application we can follow the following steps:
 2. Open a terminal in the new folder.
 3. Create a new python environment.
     ```sh
-        python3.11 -m venv .venv
+    python3.11 -m venv .venv
     ```
 4. Activate the terminal.
     For linux:
     ```sh
-        source .venv/bin/python
+    source .venv/bin/python
     ```
     For windows:
     ```cmd
-        .venv\Scripts\activate.bat
+    .venv\Scripts\activate.bat
     ```
 5. Install the requirements:
     ```sh
-        pip install -r requirement.txt
+    pip install -r requirement.txt
     ```
 6. Run the python script
     ```sh
-        python sol_regions.py
+    python sol_regions.py
     ```
 
 ## Usage
