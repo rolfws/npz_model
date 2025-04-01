@@ -1,0 +1,541 @@
+from typing import Callable
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.contour import ContourSet
+import tkinter as tk
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
+from matplotlib.path import Path
+    
+def extend_res(res:np.ndarray[float], n:int) -> np.ndarray[float]:
+    """
+        Used to extend an result of m species into an array of n>=m species
+    """
+    i = int((res.shape[1] - 1) / 2)
+    res_exp = np.zeros((res.shape[0], 2 * n + 1))
+    res_exp[:,list(range(0,i)) + list(range(n, n + i)) + [-1]] = res
+    return res_exp
+
+def array_to_diag(x:np.ndarray[float]):
+    '''
+        from [m, n] to [m, n, n].
+        Where the values are on the diagonal. for each m.
+        (x, y) -> (x,y,y)
+        
+    '''
+    return np.einsum('ij,jk->ijk', x, np.eye(x.shape[-1]))
+    
+def jac_alt_prange(params, Ps, Zs, N):
+
+    if len(Ps.shape) == 1:
+        Ps = np.repeat(Ps[None, :], N.shape[0], 0)
+    res = extend_res(np.concatenate([Ps, Zs, np.zeros((Ps.shape[0], 2))], axis=-1), params["sizes"].shape[0])
+    n = (res.shape[-1] - 1) // 2
+    Pi = res[..., :n] #[(m,) n]
+    Zi = res[..., n:-1]
+    N =  N # [(m,) 1]
+    dNpi = Pi * params["mu"] * params["k"] / (N + params["k"])**2 #[m, n]
+    dNpi = dNpi[..., None] * params["ds"] #[m, n, n]
+    dPiPj = array_to_diag(
+        params["mu"] * N / (N + params["k"])
+        - params["lambda"]
+        - params["g"] * params["K"] * Zi * params["r"]**2
+            / (Pi + params["K"] * params["r"])**2
+    ) - dNpi
+    dPiZj = array_to_diag(
+        -params["g"] * Pi * params["r"] / (Pi + params["K"] * params["r"])
+    ) - dNpi * params["r"]
+    dZiPj = array_to_diag(
+        Zi * params["gamma"] * params["g"] * params["K"] * params["r"]
+            / (Pi + params["K"] * params["r"])**2
+    )
+    dZiZj = array_to_diag(
+        params["gamma"] * params["g"] * Pi
+            / (Pi + params["K"] * params["r"])
+        - params["delta"]
+    )
+    jac =  np.block([
+        [dPiPj, dPiZj],
+        [dZiPj, dZiZj]
+    ])
+    stab = np.linalg.eigvals(jac).real.max(-1) < 0
+    return jac, stab
+
+def Pi_mm_ranges_i(params, i):
+    Pc = params["delta"] * params["K"] * params["r"] / (params["gamma"] * params["g"] - params["delta"]) # [N,M] / [M]
+    N = params["lambda"][..., i] * params["k"][..., i] / (params["mu"][..., i] - params["lambda"][..., i])
+    Zi = (
+        (Pc[..., :i] / params["r"] + params["K"][..., :i])
+        / params["g"][..., :i] 
+        * (params["mu"][..., :i] * N / (N + params["k"][..., :i]) - params["lambda"][..., :i])
+    ) # [N, i]
+    a = (Zi[...,:i] * params["ds"][:i] * params["r"]).sum(-1) + (Pc[..., :i] * params["ds"][:i]).sum(-1)
+    N_min = a + N.reshape(-1)
+    N_max = (
+        N_min 
+        + params["delta"][..., i] * params["K"][..., i] 
+            / (params["gamma"][..., i] * params["g"][..., i] - params["delta"][..., i]) * params["ds"][i]
+    )
+    jac, stabl = jac_alt_prange(params, np.concatenate([Pc[...,:i], Pc[..., [i]] * 0.01], axis=-1), Zi, N)
+    jac, stabr = jac_alt_prange(params, np.concatenate([Pc[...,:i], Pc[..., [i]] * 0.99], axis=-1), Zi, N)
+    return (N_min, N_max, stabl, stabr)
+
+def slice_indices(bool_arr:np.ndarray[bool]):
+    if not np.any(bool_arr):
+        return 0, bool_arr.shape[0] - 1
+    transitions = np.diff(bool_arr.astype(int))
+    
+    # If starts at 0, there's no 1 transition at the start
+    if bool_arr[0]:
+        start = 0
+    else:
+        start = np.where(transitions == 1)[0][0]
+        
+    # If ends at -1, there's no -1 transition at the end
+    if bool_arr[-1]:
+        end = bool_arr.shape[0] - 1
+    else:
+        end = np.where(transitions == -1)[0][0] + 1
+        
+    return start, end
+
+def solution_regions_bin_search(params, fparam:str, fpmin:float, fpmax:float, smin:float, smax:float, n:int, m:int, brd="m"):
+    size_boundaries = np.linspace(smin, smax, n + 1, True)
+    ds = np.diff(size_boundaries)
+    match brd:
+        case "r":
+            sizes = size_boundaries[1:]
+        case "m":
+            sizes = (size_boundaries[1:] + size_boundaries[:-1]) / 2
+        case _:
+            sizes = size_boundaries[:-1]
+
+    if (freeparam := fparam.split("_")[0]) in ["mu", "lambda", "k"]:
+        if fparam.split("_")[1] == "0":
+            freeval_fn = lambda v: v[:, None] * sizes ** params[freeparam + "_scale"]
+        else:
+            freeval_fn = lambda v: params[freeparam + "_0"] * sizes ** v[:, None]
+    else:
+        if fparam.split("_")[1] == "0":
+            freeval_fn = lambda v: v[:, None] * (sizes * params["r"]) ** params[freeparam + "_scale"]
+        else:
+            freeval_fn = lambda v: params[freeparam + "_0"] * (sizes * params["r"]) ** v[:, None]
+
+
+    vars_p = ["mu", "lambda", "k"]
+    vars_z = ["g", "K", "gamma", "delta"]
+    scaled_params = {"r": params["r"], "sizes": sizes, "ds": ds}
+    
+    for v in vars_p:
+        if v + "_0" == fparam or v + "_scale" == fparam:
+            continue
+        scaled_params[v] = params[v + "_0"] * sizes ** params[v + "_scale"]
+    for v in vars_z:
+        if v + "_0" == fparam or v + "_scale" == fparam:
+            continue
+        scaled_params[v] = params[v + "_0"] * (sizes * params["r"]) ** params[v + "_scale"]
+
+    regions = []
+    test_points = 5
+    for i in range(n):
+        testvs = np.linspace(fpmin, fpmax, test_points * 2, endpoint=True)
+        # In this loop we try to refine the boundaries in 3 search loops.
+        for _ in range(3):
+            inputprms = scaled_params | {freeparam: freeval_fn(testvs)}
+            test_range = Pi_mm_ranges_i(inputprms, i)
+            left_ind, right_ind = slice_indices(test_range[2] | test_range[3])
+            if left_ind <= 1 and right_ind >= testvs.shape[0] - 2: # Our range is good enough
+                break
+
+            # Refine left boundary if needed
+            if left_ind > 1:
+                left_vs = np.linspace(testvs[left_ind-1], testvs[left_ind], test_points, endpoint=True)
+            else:
+                left_vs = testvs[:left_ind+1]
+            # Refine right boundary if needed
+            if right_ind < testvs.shape[0] - 2:
+                right_vs = np.linspace(testvs[right_ind-1], testvs[right_ind], test_points, endpoint=True)
+            else:
+                right_vs = testvs[right_ind:]
+
+            testvs = np.concatenate([
+                left_vs,
+                right_vs
+            ])
+            
+        fine_range = np.linspace(testvs[0], testvs[-1], m, endpoint=True)
+        fine_vals = Pi_mm_ranges_i(scaled_params | {freeparam: freeval_fn(fine_range)}, i)
+        regions.append(fine_vals + (fine_range,))
+    return regions
+
+def draw_solution_regions_bin(ax:plt.Axes, params:dict[str, float]):
+    ax.cla()
+    try:
+        regions = solution_regions_bin_search(params, params["param_select"], params["fmin"], params["fmax"], params["s_min"], params["s_max"], params["n"], params["m"])
+    except Exception as e:
+        ax.text(0.5, 0.5, str(e), horizontalalignment='center', verticalalignment='center', transform=ax.transAxes)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        return (False, e)
+    
+    # Create two alternating colors for P and two for Z
+    P_colors = [
+        plt.cm.Greens(np.linspace(0.6, 1.0, params["n"])[::-1]),
+        plt.cm.Blues(np.linspace(0.6, 1.0, params["n"])[::-1])
+    ]
+    Z_colors = [
+        plt.cm.Reds(np.linspace(0.6, 1.0, params["n"])),
+        plt.cm.Purples(np.linspace(0.6, 1.0, params["n"]))
+    ]
+    
+    contours = []
+    contours_Z = []
+    # Add first region (P0Z0)
+    poly_Zero = list(zip(np.zeros_like(regions[0][0]), regions[0][-1])) + list(zip(regions[0][0][::-1], regions[0][-1][::-1]))
+    contours_Z.append([poly_Zero])
+
+    for i in range(len(regions)):
+        if not (np.any(regions[i][2]) and np.any(regions[i][3])):
+            continue
+        poly_P = list(zip(regions[i][0][regions[i][2]], regions[i][-1][regions[i][2]])) + list(zip(regions[i][1][regions[i][3]][::-1], regions[i][-1][regions[i][3]][::-1]))
+        contours.append([poly_P])
+        if i != len(regions)-1:
+            poly_Z = list(zip(regions[i][1][regions[i][3]], regions[i][-1][regions[i][3]])) + list(zip(regions[i+1][0][regions[i+1][2]][::-1], regions[i+1][-1][regions[i+1][2]][::-1]))
+            contours_Z.append([poly_Z])
+        
+
+    # Alternate colors for P and Z regions
+    colors = [P_colors[i % 2][i] for i in range(len(contours))] + [Z_colors[i % 2][i] for i in range(len(contours_Z))]
+    hatches = [None] * len(contours) + ["."] * len(contours_Z)
+    labels = [f"P_{i + 1}Z_{i}" for i, _ in enumerate(contours)] + [f"P_{i}Z_{i}" for i, _ in enumerate(contours_Z)]
+    contours += contours_Z
+    levels = list(range(len(contours) + 1))
+    
+    # Create ContourSet with enhanced appearance
+    cs = ContourSet(
+        ax, 
+        levels, 
+        contours, 
+        filled=True,
+        hatches=hatches,
+        colors=colors,
+        alpha=1.0
+    )
+    
+    # Create legend with the four color types
+    legend_patches = [
+        plt.Rectangle((0, 0), 1, 1, facecolor=plt.cm.Greens(0.8), alpha=0.7),
+        plt.Rectangle((0, 0), 1, 1, facecolor=plt.cm.Blues(0.8), alpha=0.7),
+        plt.Rectangle((0, 0), 1, 1, facecolor=plt.cm.Reds(0.8), alpha=0.7, hatch='.'),
+        plt.Rectangle((0, 0), 1, 1, facecolor=plt.cm.Purples(0.8), alpha=0.7, hatch='.')
+    ]
+    legend_labels = [
+        'P (Green)',
+        'P (Blue)',
+        'Z (Red)',
+        'Z (Purple)'
+    ]
+    legend = ax.legend(legend_patches, legend_labels, 
+                      loc='upper right',  # Position in top right
+                      bbox_to_anchor=(0.98, 0.98),  # Fine-tune position
+                      framealpha=0.7,  # Make background semi-transparent
+                      ncol=2)  # Use 2 columns to make it more compact
+    
+    # Enhance grid and spines
+    ax.grid(True, linestyle='--', alpha=0.7)
+    for spine in ax.spines.values():
+        spine.set_linewidth(1.5)
+    
+    # Add labels with larger formatting
+    ax.set_xlabel('Nt', fontsize=14, fontweight='bold')
+    ax.set_ylabel(params["param_select"], fontsize=14, fontweight='bold')
+    
+    # Make tick marks more visible
+    ax.tick_params(
+        axis='both',          # Apply to both x and y axes
+        direction='out',      # Ticks point outward
+        length=5,            # Make them longer to be more visible
+        width=1,           # Make them thicker
+        which='major',       # Apply to major ticks
+        grid_alpha=0.7,      # Grid line transparency
+        zorder=3,            # Make sure ticks are drawn on top
+    )
+
+    
+    # Make sure ticks are enabled
+    ax.xaxis.set_ticks_position('bottom')
+    ax.yaxis.set_ticks_position('left')
+    
+    # Create a status text that will show the region
+    status_text = ax.text(0.02, 0.98, '', transform=ax.transAxes, 
+                         verticalalignment='top', bbox=dict(facecolor='white', alpha=0.7))
+    
+    def on_mouse_move(event):
+        if event.inaxes != ax:
+            text = ''
+        else:
+            x, y = event.xdata, event.ydata
+            text = ''
+            
+            for i, contour in enumerate(contours):
+                if Path(contour[0]).contains_point((x, y)):
+                    if i < len(contours) - len(contours_Z):
+                        text = f'Solution type: #P={i + 1}, #Z={i}'
+                    else:
+                        z_idx = i - (len(contours) - len(contours_Z))
+                        text = f'Solution type: #P={z_idx}, #Z={z_idx}'
+                    break
+        
+        if status_text.get_text() != text:  # Only update if text changed
+            status_text.set_text(text)
+            fig.canvas.draw_idle()
+    
+    # Connect the event handler
+    fig = ax.figure
+    fig.canvas.mpl_connect('motion_notify_event', on_mouse_move)
+    
+    return (True, ())
+
+def setup_buttons(params:dict[str, float], draw:Callable, parent:tk.Frame):
+    text_width = 11
+    box_width = 7
+
+    # Create frame for parameters
+    param_frame = tk.Frame(parent)
+    param_frame.pack(fill=tk.BOTH, expand=True, padx=10)
+    
+    boxes:dict[str, tk.Widget] = {}
+    
+    def make_update_func(param, type=float):
+        def update(event=None):
+            # Only handle Ctrl+Enter for rendering
+            if event and event.state & 0x4:  # 0x4 is the state flag for Control
+                new_draw()
+        
+        def on_edit(event=None):
+            entry = boxes[param]
+            try:
+                new_value = type(entry.get())
+                if new_value != params[param]:
+                    params[param] = new_value
+                    entry.configure(bg  ='#90EE90')  # Light green for valid input
+                elif entry.cget('bg') == 'white':  # If value matches and background is white, keep it white
+                    pass
+                else:  # If value matches but background is not white (was previously changed), keep it green
+                    entry.configure(bg  ='#90EE90')
+            except ValueError:
+                entry.configure(bg  ='#FFB6C6')  # Light red for invalid input
+        
+        return update, on_edit
+    
+    # Handle r parameter with slider
+    r_frame = tk.Frame(param_frame)
+    r_frame.pack(fill=tk.X, pady=2)
+    tk.Label(r_frame, text="r", width=text_width).pack(side=tk.LEFT)
+    
+    # Create value label to show current value
+    # r_value_label = tk.Label(r_frame, text=str(params["r"]), width=5)
+    # r_value_label.pack(side=tk.RIGHT)
+    
+    # Create slider
+    r_slider = tk.Scale(
+        r_frame, 
+        from_=1, 
+        to=10, 
+        orient=tk.HORIZONTAL, 
+        resolution=0.1,
+    )
+    r_slider.set(params["r"])
+    r_slider.pack(fill=tk.X, expand=True, padx=5)
+    boxes["r"] = r_slider
+
+    def on_slider_release(event):
+        value = float(r_slider.get())
+        params["r"] = value
+        r_slider.config(troughcolor  ='#90EE90')  # Light green for confirmed change
+
+    r_slider.bind('<ButtonRelease-1>', on_slider_release)  # Only update when mouse is released
+    
+    # Group parameters by base name
+    param_groups = {}
+    for param, value in params.items():
+        if param in ["r", "s_min", "s_max", "n", "m", "fmin", "fmax", "param_select"]:
+            continue
+        base = param.split('_')[0]
+        if base not in param_groups:
+            param_groups[base] = []
+        param_groups[base].append((param, value))
+
+    # Create shared radio button variable
+    selected_param = tk.StringVar(value="delta_0")  # Set delta_0 as default
+    
+    # Create entries for each parameter group
+    for base in param_groups:
+        group_frame = tk.Frame(param_frame)
+        group_frame.pack(fill=tk.X, pady=2)
+        
+        # Create horizontal layout for each parameter group
+        param_row = tk.Frame(group_frame)
+        param_row.pack(fill=tk.X)
+        
+        # Add label
+        tk.Label(param_row, text=base, width=text_width).pack(side=tk.LEFT)
+        
+        # Add entries and radio buttons for each parameter
+        for param, value in param_groups[base]:
+            # Create frame for parameter pair
+            param_pair = tk.Frame(param_row)
+            param_pair.pack(side=tk.LEFT, padx=2)
+            
+            # Add entry
+            entry = tk.Entry(param_pair, width=box_width)
+            entry.insert(0, str(value))
+            entry.configure(bg='white')
+            entry.pack(side=tk.LEFT)
+            boxes[param] = entry
+            
+            update_func, edit_func = make_update_func(param)
+            entry.bind('<Return>', update_func)
+            entry.bind('<KeyRelease>', edit_func)
+            
+            # Add radio button
+            radio = tk.Radiobutton(param_pair, variable=selected_param, value=param)
+            radio.pack(side=tk.LEFT)
+    
+    # Store selected parameter variable in params dict
+    params["param_select"] = selected_param.get()
+    selected_param.trace_add("write", lambda *args: params.update({"param_select": selected_param.get()}))
+
+    # Size range controls
+    # Create frames for parameter pairs
+    # First row: s min/max + n
+    remainin_rows = [
+        ("s min/max, n", [("s_min", float), ("s_max", float), ("n", int)]),
+        ("f min/max, m", [("fmin", float), ("fmax", float), ("m", int)]),
+    ]
+    for label, prms in remainin_rows:
+        frame = tk.Frame(param_frame)
+        frame.pack(fill=tk.X, pady=2)
+        tk.Label(frame, text=label, width=text_width).pack(side=tk.LEFT)
+        for param, type in prms:
+            entry = tk.Entry(frame, width=box_width)
+            entry.insert(0, str(params[param]))
+            entry.configure(bg='white')
+            entry.pack(side=tk.LEFT, padx=2)
+            boxes[param] = entry
+            update_func, edit_func = make_update_func(param, type)
+            entry.bind('<Return>', update_func)
+            entry.bind('<KeyRelease>', edit_func)
+
+    # Modify the draw function to reset colors
+    def new_draw():
+        # Reset all entry colors to white
+        for entry in boxes.values():
+            if isinstance(entry, tk.Entry):
+                entry.configure(bg='white')
+            if isinstance(entry, tk.Scale):
+                entry.configure(troughcolor='white')
+        draw()
+
+    # Update render button with new draw function
+    render_button = tk.Button(param_frame, text="Render", command=new_draw)
+    render_button.pack(pady=10)
+    boxes['render_button'] = render_button
+
+    # Add explanatory text
+    help_text = (
+        "Colors:\n"
+        "• White - Unchanged value\n"
+        "• Green - Confirmed change\n"
+        "• Red - Invalid input\n\n"
+        "Shortcuts:\n"
+        "• Ctrl+Enter - Confirm and render\n\n"
+    )
+    help_label = tk.Label(param_frame, text=help_text, justify=tk.LEFT, anchor='w')
+    help_label.pack(pady=10, padx=5)
+
+    return boxes
+
+
+def parameter_domains_interactive():
+    root = tk.Tk()
+    root.wm_title("Parameter Domains")
+    
+    # Create main container with left and right frames
+    main_frame = tk.Frame(root)
+    main_frame.pack(fill=tk.BOTH, expand=True)
+    
+    # Create left frame for plot and toolbar
+    left_frame = tk.Frame(main_frame)
+    left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    
+    # Create right frame for parameters
+    right_frame = tk.Frame(main_frame)
+    right_frame.pack(side=tk.RIGHT, fill=tk.Y)
+    
+    # Create figure with tight layout
+    fig = plt.Figure(tight_layout=False)
+    ax = fig.add_subplot(111)
+    
+    params = {
+        "mu_0": 5.9,
+        "mu_scale": -0.75,
+        "lambda_0": 0.017,
+        "lambda_scale": -0.6,
+        "k_0": 1.0,
+        "k_scale": 1.14,
+        "g_0": 7.0,
+        "g_scale": -0.75,
+        "K_0": 1.0,
+        "K_scale": 0.24,
+        "gamma_0": 0.7,
+        "gamma_scale": 0.24,
+        "delta_0": 0.17,
+        "delta_scale": -0.75,
+        "r": 1.0,
+        "s_min": 1.0,
+        "s_max": 2.0,
+        "n": 8,
+        "m": 50,
+        "param_select": "delta_0",
+        "fmin": 0.1,
+        "fmax": 2.0,
+    }
+    
+    def draw():
+        try:
+            ax.clear()  # Clear the axis properly
+            success, err = draw_solution_regions_bin(ax, params)
+            # Adjust the layout to fill the space
+            fig.canvas.draw_idle()  # Use draw_idle instead of draw
+            root.update_idletasks()  # Update the Tkinter event loop
+        except Exception as e:
+            print(f"Error during draw: {e}")
+    
+    # Create the matplotlib canvas
+    canvas = FigureCanvasTkAgg(fig, master=left_frame)
+    canvas_widget = canvas.get_tk_widget()
+    canvas_widget.pack(side=tk.TOP, fill=tk.BOTH, expand=1)
+    
+    # Add navigation toolbar
+    toolbar = NavigationToolbar2Tk(canvas, left_frame)
+    toolbar.update()
+    toolbar.pack(side=tk.BOTTOM, fill=tk.X)
+
+    # Setup buttons in the right frame
+    boxes = setup_buttons(params, draw, right_frame)
+    
+    # Set initial window size
+    root.geometry("1200x800")
+    
+    draw()
+    
+    # Add window close handler
+    def on_closing():
+        plt.close(fig)  # Close the figure properly
+        root.destroy()
+    
+    root.protocol("WM_DELETE_WINDOW", on_closing)
+    root.mainloop()
+
+parameter_domains_interactive()
