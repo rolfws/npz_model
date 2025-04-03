@@ -101,6 +101,68 @@ def slice_indices(bool_arr:np.ndarray[bool]):
         
     return start, end
 
+def interpolate_masked_arrays_general(arr1: np.ndarray[float], 
+                                      arr2: np.ndarray[float], 
+                                      mask1: np.ndarray[bool], 
+                                      mask2: np.ndarray[bool]) -> tuple[np.ndarray[float], np.ndarray[float]]:
+    """
+    Interpolates values in arr1 and arr2 based on overlapping masks, 
+    handling cases where either mask can extend further on either side.
+
+    Modifies the array corresponding to the False mask in the outer regions.
+
+    Args:
+        arr1: First float array. Assumed arr1 >= arr2 element-wise.
+        arr2: Second float array.
+        mask1: Boolean mask for arr1. Has a contiguous True slice.
+        mask2: Boolean mask for arr2. Has a contiguous True slice that overlaps mask1's.
+
+    Returns:
+        A tuple containing the modified arr1 and arr2.
+    """
+    if not (arr1.shape == arr2.shape == mask1.shape == mask2.shape):
+        raise ValueError("All input arrays must have the same shape.")
+
+    # Find the indices of the True slices
+    idx1 = np.flatnonzero(mask1)
+    idx2 = np.flatnonzero(mask2)
+    arr1_mod = arr1.copy()
+    arr2_mod = arr2.copy()
+    if idx1.size == 0 or idx2.size == 0:
+        print("Warning: One or both masks are all False. No interpolation possible.")
+        return arr1, arr2, mask1 & mask2
+
+    start1, end1 = idx1[0], idx1[-1]
+    start2, end2 = idx2[0], idx2[-1]
+
+    # Find overlap region boundaries
+    overlap_start = max(start1, start2)
+    overlap_end = min(end1, end2)
+
+    # --- Interpolate LEFT outer region ---
+    # Determine which mask starts first
+    true_left_start = min(start1, start2)
+    if true_left_start < overlap_start: # Check if there is a left outer region
+        int_perc = np.linspace(0, 1, (overlap_start - true_left_start + 1), endpoint=True)
+        if start1 < start2: # mask1 starts first, interpolate arr2
+            arr2_mod[true_left_start:overlap_start+1] = int_perc * arr2[true_left_start:overlap_start+1] + (1 - int_perc) * arr1[true_left_start:overlap_start+1]
+        elif start2 < start1: # mask2 starts first, interpolate arr1
+            arr1_mod[true_left_start:overlap_start+1] = int_perc * arr1[true_left_start:overlap_start+1] + (1 - int_perc) * arr2[true_left_start:overlap_start+1]
+
+    # --- Interpolate RIGHT outer region ---
+    # Determine which mask ends last
+    true_right_end = max(end1, end2)
+
+    if true_right_end > overlap_end: # Check if there is a right outer region
+        int_perc = np.linspace(0,1, (true_right_end - overlap_end + 1), endpoint=True)
+        if end1 > end2: # mask1 ends last, interpolate arr2
+            # Interpolate arr2 from arr2[overlap_end] at overlap_end to arr1[end1] at end1
+            arr2_mod[overlap_end:true_right_end+1] = int_perc * arr1[overlap_end:true_right_end+1] + (1 - int_perc) * arr2[overlap_end:true_right_end+1]
+        elif end2 > end1: # mask2 ends last, interpolate arr1
+             # Interpolate arr1 from arr1[overlap_end] at overlap_end to arr2[end2] at end2
+            arr1_mod[overlap_end:true_right_end+1] = int_perc * arr2[overlap_end:true_right_end+1] + (1 - int_perc) * arr1[overlap_end:true_right_end+1]
+    return arr1_mod, arr2_mod, mask1 | mask2
+
 def solution_regions_bin_search(params, fparam:str, fpmin:float, fpmax:float, smin:float, smax:float, n:int, m:int, brd="m", progress_frame:tk.Frame=None):
     progress_bar = ttk.Progressbar(progress_frame, length=200, mode='determinate')
     progress_bar.pack()
@@ -204,13 +266,15 @@ def draw_solution_regions_bin(ax:plt.Axes, params:dict[str, float], progress_fra
         return (False, e)
     
     # Create two alternating colors for P and two for Z
+    pcm = plt.cm.viridis
+    zcm = plt.cm.magma_r
     P_colors = [
-        plt.cm.Greens(np.linspace(0.6, 1.0, params["n"])[::-1]),
-        plt.cm.Blues(np.linspace(0.6, 1.0, params["n"])[::-1])
+        pcm(np.linspace(0.1, 0.5, params["n"])),
+        pcm(np.linspace(0.6, 1.0, params["n"]))
     ]
     Z_colors = [
-        plt.cm.Reds(np.linspace(0.6, 1.0, params["n"])),
-        plt.cm.Purples(np.linspace(0.6, 1.0, params["n"]))
+        zcm(np.linspace(0.1, 0.5, params["n"])),
+        zcm(np.linspace(0.6, 1.0, params["n"]))
     ]
     
     contours = []
@@ -222,16 +286,19 @@ def draw_solution_regions_bin(ax:plt.Axes, params:dict[str, float], progress_fra
     for i in range(len(regions)):
         if not (np.any(regions[i][2]) and np.any(regions[i][3])):
             continue
-        poly_P = list(zip(regions[i][0][regions[i][2]], regions[i][-1][regions[i][2]])) + list(zip(regions[i][1][regions[i][3]][::-1], regions[i][-1][regions[i][3]][::-1]))
+        region_left, region_right, mask = interpolate_masked_arrays_general(regions[i][0], regions[i][1], regions[i][2], regions[i][3])
+        poly_P = list(zip(region_left[mask], regions[i][-1][mask])) + list(zip(region_right[mask][::-1], regions[i][-1][mask][::-1]))
         contours.append([poly_P])
         if i != len(regions)-1:
+            # Interpolating Z is not as straightforward as the evaluation points are different between the bottom and the top.
             poly_Z = list(zip(regions[i][1][regions[i][3]], regions[i][-1][regions[i][3]])) + list(zip(regions[i+1][0][regions[i+1][2]][::-1], regions[i+1][-1][regions[i+1][2]][::-1]))
             contours_Z.append([poly_Z])
         
 
     # Alternate colors for P and Z regions
-    colors = [P_colors[i % 2][i] for i in range(len(contours))] + [Z_colors[i % 2][i] for i in range(len(contours_Z))]
-    hatches = [None] * len(contours) + ["."] * len(contours_Z)
+    colors = [P_colors[i % 2][i] for i in range(len(contours))] + [plt.cm.Greys(0.9)]+[Z_colors[i % 2][i] for i in range(1, len(contours_Z))]
+    hat = None
+    hatches = [None] * len(contours) + [hat] * len(contours_Z)
     labels = [f"P_{i + 1}Z_{i}" for i, _ in enumerate(contours)] + [f"P_{i}Z_{i}" for i, _ in enumerate(contours_Z)]
     contours += contours_Z
     levels = list(range(len(contours) + 1))
@@ -249,16 +316,16 @@ def draw_solution_regions_bin(ax:plt.Axes, params:dict[str, float], progress_fra
     
     # Create legend with the four color types
     legend_patches = [
-        plt.Rectangle((0, 0), 1, 1, facecolor=plt.cm.Greens(0.8), alpha=0.7),
-        plt.Rectangle((0, 0), 1, 1, facecolor=plt.cm.Blues(0.8), alpha=0.7),
-        plt.Rectangle((0, 0), 1, 1, facecolor=plt.cm.Reds(0.8), alpha=0.7, hatch='.'),
-        plt.Rectangle((0, 0), 1, 1, facecolor=plt.cm.Purples(0.8), alpha=0.7, hatch='.')
+        plt.Rectangle((0, 0), 1, 1, facecolor=pcm(0.3), alpha=0.7),
+        plt.Rectangle((0, 0), 1, 1, facecolor=pcm(0.8), alpha=0.7),
+        plt.Rectangle((0, 0), 1, 1, facecolor=zcm(0.3), alpha=0.7, hatch=hat),
+        plt.Rectangle((0, 0), 1, 1, facecolor=zcm(0.8), alpha=0.7, hatch=hat)
     ]
     legend_labels = [
-        'P (Green)',
-        'P (Blue)',
-        'Z (Red)',
-        'Z (Purple)'
+        'P',
+        'P',
+        'Z',
+        'Z'
     ]
     legend = ax.legend(legend_patches, legend_labels, 
                       loc='upper right',  # Position in top right
