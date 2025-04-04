@@ -166,13 +166,14 @@ def interpolate_masked_arrays_general(
     overlap_start = max(start1, start2)
     overlap_end = min(end1, end2)
 
+    def range_to_perc(start, end):
+        return np.linspace(0, 1, end - start +1, endpoint=True)
+
     # --- Interpolate LEFT outer region ---
     # Determine which mask starts first
     true_left_start = min(start1, start2)
     if true_left_start < overlap_start:  # Check if there is a left outer region
-        int_perc = np.linspace(
-            0, 1, (overlap_start - true_left_start + 1), endpoint=True
-        )
+        int_perc = range_to_perc(true_left_start, overlap_start)
         if start1 < start2:  # mask1 starts first, interpolate arr2
             arr2_mod[true_left_start : overlap_start + 1] = (
                 int_perc * arr2[true_left_start : overlap_start + 1]
@@ -189,7 +190,7 @@ def interpolate_masked_arrays_general(
     true_right_end = max(end1, end2)
 
     if true_right_end > overlap_end:  # Check if there is a right outer region
-        int_perc = np.linspace(0, 1, (true_right_end - overlap_end + 1), endpoint=True)
+        int_perc = range_to_perc(overlap_end, true_right_end)
         if end1 > end2:  # mask1 ends last, interpolate arr2
             # Interpolate arr2 from arr2[overlap_end] at overlap_end to arr1[end1] at end1
             arr2_mod[overlap_end : true_right_end + 1] = (
@@ -198,6 +199,7 @@ def interpolate_masked_arrays_general(
             )
         elif end2 > end1:  # mask2 ends last, interpolate arr1
             # Interpolate arr1 from arr1[overlap_end] at overlap_end to arr2[end2] at end2
+            
             arr1_mod[overlap_end : true_right_end + 1] = (
                 int_perc * arr2[overlap_end : true_right_end + 1]
                 + (1 - int_perc) * arr1[overlap_end : true_right_end + 1]
@@ -551,7 +553,7 @@ def setup_buttons(params: dict[str, float], draw: Callable, parent: tk.Frame):
     # Group parameters by base name
     param_groups = {}
     for param, value in params.items():
-        if param in ["r", "s_min", "s_max", "n", "m", "fmin", "fmax", "param_select"]:
+        if param in ["r", "s_min", "s_max", "n", "m", "fmin", "fmax", "param_select", "P_colormap", "Z_colormap", "P_spread", "Z_spread"]:
             continue
         base = param.split("_")[0]
         if base not in param_groups:
