@@ -40,19 +40,19 @@ def jac_alt_prange(params, Ps, Zs, N):
     dPiPj = array_to_diag(
         params["mu"] * N / (N + params["k"])
         - params["lambda"]
-        - params["g"] * params["K"] * Zi * params["r"]**2
-            / (Pi + params["K"] * params["r"])**2
+        - params["g"] * params["K"] * Zi * params["r"]
+            / (Pi + params["K"])**2
     ) - dNpi
     dPiZj = array_to_diag(
-        -params["g"] * Pi * params["r"] / (Pi + params["K"] * params["r"])
+        -params["g"] * Pi * params["r"] / (Pi + params["K"])
     ) - dNpi * params["r"]
     dZiPj = array_to_diag(
-        Zi * params["gamma"] * params["g"] * params["K"] * params["r"]
-            / (Pi + params["K"] * params["r"])**2
+        Zi * params["gamma"] * params["g"] * params["K"]
+            / (Pi + params["K"])**2
     )
     dZiZj = array_to_diag(
         params["gamma"] * params["g"] * Pi
-            / (Pi + params["K"] * params["r"])
+            / (Pi + params["K"])
         - params["delta"]
     )
     jac =  np.block([
@@ -63,12 +63,12 @@ def jac_alt_prange(params, Ps, Zs, N):
     return jac, stab
 
 def Pi_mm_ranges_i(params, i):
-    Pc = params["delta"] * params["K"] * params["r"] / (params["gamma"] * params["g"] - params["delta"]) # [N,M] / [M]
+    Pc = params["delta"] * params["K"] / (params["gamma"] * params["g"] - params["delta"]) # [N,M] / [M]
     N = params["lambda"][..., i] * params["k"][..., i] / (params["mu"][..., i] - params["lambda"][..., i])
     N = N.reshape(-1, 1)
     Zi = (
-        (Pc[..., :i] / params["r"] + params["K"][..., :i])
-        / params["g"][..., :i] 
+        (Pc[..., :i] + params["K"][..., :i])
+        / (params["g"][..., :i] * params["r"])
         * (params["mu"][..., :i] * N / (N + params["k"][..., :i]) - params["lambda"][..., :i])
     ) # [N, i]
     a = (Zi[...,:i] * params["ds"][:i] * params["r"]).sum(-1) + (Pc[..., :i] * params["ds"][:i]).sum(-1)
@@ -266,15 +266,17 @@ def draw_solution_regions_bin(ax:plt.Axes, params:dict[str, float], progress_fra
         return (False, e)
     
     # Create two alternating colors for P and two for Z
-    pcm = plt.cm.viridis
-    zcm = plt.cm.magma_r
+    pcm = getattr(plt.cm, params["P_colormap"])
+    zcm = getattr(plt.cm, params["Z_colormap"])
+    spread = params["P_spread"]
     P_colors = [
-        pcm(np.linspace(0.1, 0.5, params["n"])),
-        pcm(np.linspace(0.6, 1.0, params["n"]))
+        pcm(np.linspace(0.0, spread, params["n"])),
+        pcm(np.linspace(spread, 2 * spread, params["n"]))
     ]
+    spread = params["Z_spread"]
     Z_colors = [
-        zcm(np.linspace(0.1, 0.5, params["n"])),
-        zcm(np.linspace(0.6, 1.0, params["n"]))
+        zcm(np.linspace(0.0, spread, params["n"])),
+        zcm(np.linspace(spread, 2 * spread, params["n"]))
     ]
     
     contours = []
@@ -610,7 +612,75 @@ def parameter_domains_interactive():
         "param_select": "delta_0",
         "fmin": 0.1,
         "fmax": 2.0,
+        # Color configuration parameters
+        "P_colormap": "summer",
+        "Z_colormap": "autumn",
+        "P_spread": 0.3,
+        "Z_spread": 0.3
     }
+
+    def open_color_config():
+        color_window = tk.Toplevel(root)
+        color_window.title("Color Configuration")
+        color_window.geometry("400x300")
+        def reverse_colormap(v:str) -> str:
+            if v.endswith('_r'):
+                return v[:-2]
+            else:
+                return v + '_r'
+        # Get list of available colormaps
+        colormaps = sorted([m for m in plt.colormaps() if not m.endswith('_r')])
+        
+        # P colormap selection
+        p_frame = tk.Frame(color_window)
+        p_frame.pack(fill=tk.X, padx=10, pady=5)
+        tk.Label(p_frame, text="P Colormap:").pack(side=tk.LEFT)
+        p_colormap = ttk.Combobox(p_frame, values=colormaps, state="readonly")
+        p_colormap.set(params["P_colormap"])
+        p_colormap.pack(side=tk.LEFT, padx=5)
+
+
+        rev_button = tk.Button(p_frame, text="Reverse", command=lambda: p_colormap.set(reverse_colormap(p_colormap.get())))
+        rev_button.pack(side=tk.LEFT, padx=5)
+        
+        # P spread slider
+        p_spread_frame = tk.Frame(color_window)
+        p_spread_frame.pack(fill=tk.X, padx=10, pady=5)
+        tk.Label(p_spread_frame, text="P Spread:").pack(side=tk.LEFT)
+        p_spread = tk.Scale(p_spread_frame, from_=0, to=0.5, orient=tk.HORIZONTAL, resolution=0.01)
+        p_spread.set(params["P_spread"])
+        p_spread.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        
+        # Z colormap selection
+        z_frame = tk.Frame(color_window)
+        z_frame.pack(fill=tk.X, padx=10, pady=5)
+        tk.Label(z_frame, text="Z Colormap:").pack(side=tk.LEFT)
+        z_colormap = ttk.Combobox(z_frame, values=colormaps, state="readonly")
+        z_colormap.set(params["Z_colormap"])
+        z_colormap.pack(side=tk.LEFT, padx=5)
+        
+        rev_button = tk.Button(z_frame, text="Reverse", command=lambda: z_colormap.set(reverse_colormap(z_colormap.get())))
+        rev_button.pack(side=tk.LEFT, padx=5)
+
+        # Z spread slider
+        z_spread_frame = tk.Frame(color_window)
+        z_spread_frame.pack(fill=tk.X, padx=10, pady=5)
+        tk.Label(z_spread_frame, text="Z Spread:").pack(side=tk.LEFT)
+        z_spread = tk.Scale(z_spread_frame, from_=0, to=0.5, orient=tk.HORIZONTAL, resolution=0.01)
+        z_spread.set(params["Z_spread"])
+        z_spread.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        
+        def apply_changes():
+            params["P_colormap"] = p_colormap.get()
+            params["Z_colormap"] = z_colormap.get()
+            params["P_spread"] = float(p_spread.get())
+            params["Z_spread"] = float(z_spread.get())
+            draw()
+            color_window.destroy()
+        
+        # Apply button
+        apply_btn = tk.Button(color_window, text="Apply", command=apply_changes)
+        apply_btn.pack(pady=10)
     
     def draw():
         try:
@@ -623,6 +693,10 @@ def parameter_domains_interactive():
     
     # Setup buttons in the right frame
     boxes = setup_buttons(params, draw, right_frame)
+    
+    # Add color configuration button
+    color_config_btn = tk.Button(right_frame, text="Configure Colors", command=open_color_config)
+    color_config_btn.pack(pady=5)
     
     # Set initial window size
     root.geometry("1200x800")
