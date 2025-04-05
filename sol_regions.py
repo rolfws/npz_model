@@ -270,6 +270,8 @@ def solution_regions_bin_search(
     for i in range(n):
         progress_bar["value"] = (i / n) * 100
         progress_frame.update()
+        if i > 1 and not np.any(regions[-1][3]):
+            break
 
         testvs = np.linspace(fpmin, fpmax, test_points * 2, endpoint=True)
         # In this loop we try to refine the boundaries in 3 search loops.
@@ -410,10 +412,10 @@ def draw_solution_regions_bin(
 
     # Create legend with the four color types
     legend_patches = [
-        plt.Rectangle((0, 0), 1, 1, facecolor=pcm(0.3), alpha=0.7),
-        plt.Rectangle((0, 0), 1, 1, facecolor=pcm(0.8), alpha=0.7),
-        plt.Rectangle((0, 0), 1, 1, facecolor=zcm(0.3), alpha=0.7, hatch=hat),
-        plt.Rectangle((0, 0), 1, 1, facecolor=zcm(0.8), alpha=0.7, hatch=hat),
+        plt.Rectangle((0, 0), 1, 1, facecolor=pcm(params["P_spread"] * 0.5), alpha=0.7),
+        plt.Rectangle((0, 0), 1, 1, facecolor=pcm(params["P_spread"] * 1.5), alpha=0.7),
+        plt.Rectangle((0, 0), 1, 1, facecolor=zcm(params["Z_spread"] * 0.5), alpha=0.7, hatch=hat),
+        plt.Rectangle((0, 0), 1, 1, facecolor=zcm(params["Z_spread"] * 1.5), alpha=0.7, hatch=hat),
     ]
     legend_labels = ["P", "P", "Z", "Z"]
     legend = ax.legend(
