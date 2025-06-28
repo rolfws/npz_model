@@ -8,7 +8,6 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
 from matplotlib.path import Path
 
-
 def extend_res(res: np.ndarray[float], n: int) -> np.ndarray[float]:
     """
     Used to extend an result of m species into an array of n>=m species
@@ -66,7 +65,7 @@ def jac_alt_prange(params, Ps, Zs, N):
     return jac, stab
 
 
-def Pi_mm_ranges_i(params, i):
+def Pi_N_Zi_vals(params, i):
     Pc = (
         params["delta"]
         * params["K"]
@@ -85,7 +84,11 @@ def Pi_mm_ranges_i(params, i):
             params["mu"][..., :i] * N / (N + params["k"][..., :i])
             - params["lambda"][..., :i]
         )
-    )  # [N, i]
+    ) 
+    return Pc, N, Zi
+
+def Pi_mm_ranges_i(params, i):
+    Pc, N, Zi = Pi_N_Zi_vals(params, i) # [N, i]
     a = (Zi[..., :i] * params["ds"][:i] * params["r"]).sum(-1) + (
         Pc[..., :i] * params["ds"][:i]
     ).sum(-1)
@@ -206,25 +209,8 @@ def interpolate_masked_arrays_general(
             )
     return arr1_mod, arr2_mod, mask1 | mask2
 
-
-def solution_regions_bin_search(
-    params,
-    fparam: str,
-    fpmin: float,
-    fpmax: float,
-    smin: float,
-    smax: float,
-    n: int,
-    m: int,
-    brd="m",
-    progress_frame: tk.Frame = None,
-):
-    progress_bar = ttk.Progressbar(progress_frame, length=200, mode="determinate")
-    progress_bar.pack()
-    progress_label = tk.Label(progress_frame, text="Calculating regions...")
-    progress_label.pack()
-
-    size_boundaries = np.linspace(smin, smax, n + 1, True)
+def get_param_dict(params: dict[str, float|str], brd):
+    size_boundaries = np.linspace(params["s_min"], params["s_max"], params["n"] + 1, True)
     ds = np.diff(size_boundaries)
     match brd:
         case "r":
@@ -233,50 +219,77 @@ def solution_regions_bin_search(
             sizes = (size_boundaries[1:] + size_boundaries[:-1]) / 2
         case _:
             sizes = size_boundaries[:-1]
-
-    if (freeparam := fparam.split("_")[0]) in ["mu", "lambda", "k"]:
-        if fparam.split("_")[1] == "0":
-            freeval_fn = lambda v: v[:, None] * sizes ** params[freeparam + "_scale"]
+    
+    if (freeparam := params["param_select"].split("_")[0]) in ["mu", "lambda", "k"]:
+        if params["param_select"].split("_")[1] == "0":
+            def freeval_fn(v):
+                return v[:, None] * sizes ** params[freeparam + "_scale"]
         else:
-            freeval_fn = lambda v: params[freeparam + "_0"] * sizes ** v[:, None]
+            def freeval_fn(v):
+                return params[freeparam + "_0"] * sizes ** v[:, None]
     else:
-        if fparam.split("_")[1] == "0":
-            freeval_fn = (
-                lambda v: v[:, None]
-                * (sizes * params["r"]) ** params[freeparam + "_scale"]
-            )
+        if params["param_select"].split("_")[1] == "0":
+            def freeval_fn(v):
+                return (v[:, None]
+                            * (sizes * params["r"]) ** params[freeparam + "_scale"])
         else:
-            freeval_fn = (
-                lambda v: params[freeparam + "_0"] * (sizes * params["r"]) ** v[:, None]
-            )
+            def freeval_fn(v):
+                return (params[freeparam + "_0"] * (sizes * params["r"]) ** v[:, None])
 
     vars_p = ["mu", "lambda", "k"]
     vars_z = ["g", "K", "gamma", "delta"]
     scaled_params = {"r": params["r"], "sizes": sizes, "ds": ds}
 
     for v in vars_p:
-        if v + "_0" == fparam or v + "_scale" == fparam:
+        if v + "_0" == params["param_select"] or v + "_scale" == params["param_select"]:
             continue
         scaled_params[v] = params[v + "_0"] * sizes ** params[v + "_scale"]
     for v in vars_z:
-        if v + "_0" == fparam or v + "_scale" == fparam:
+        if v + "_0" == params["param_select"] or v + "_scale" == params["param_select"]:
             continue
         scaled_params[v] = (
             params[v + "_0"] * (sizes * params["r"]) ** params[v + "_scale"]
         )
+    if (freeparam := params["param_select"].split("_")[0]) in ["mu", "lambda", "k"]:
+        if params["param_select"].split("_")[1] == "0":
+            def freeval_fn(v):
+                return v[:, None] * sizes ** params[freeparam + "_scale"]
+        else:
+            def freeval_fn(v):
+                return params[freeparam + "_0"] * sizes ** v[:, None]
+    else:
+        if params["param_select"].split("_")[1] == "0":
+            def freeval_fn(v):
+                return (v[:, None]
+                            * (sizes * params["r"]) ** params[freeparam + "_scale"])
+        else:
+            def freeval_fn(v):
+                return (params[freeparam + "_0"] * (sizes * params["r"]) ** v[:, None])
+    return freeparam, scaled_params, freeval_fn
 
+def solution_regions_bin_search(
+    params,
+    brd="m",
+    progress_frame: tk.Frame = None,
+):
+    progress_bar = ttk.Progressbar(progress_frame, length=200, mode="determinate")
+    progress_bar.pack()
+    progress_label = tk.Label(progress_frame, text="Calculating regions...")
+    progress_label.pack()
+    freeparam, scaled_params, freeval_fn = get_param_dict(params, brd)
     regions = []
     test_points = 5
-    for i in range(n):
-        progress_bar["value"] = (i / n) * 100
+    for i in range(params["n"]):
+        progress_bar["value"] = (i / params["n"]) * 100
         progress_frame.update()
         if i > 1 and not np.any(regions[-1][3]):
             break
 
-        testvs = np.linspace(fpmin, fpmax, test_points * 2, endpoint=True)
+        testvs = np.linspace(params["fmin"], params["fmax"], test_points * 2, endpoint=True)
         # In this loop we try to refine the boundaries in 3 search loops.
-        for _ in range(3):
+        for t in range(3):
             inputprms = scaled_params | {freeparam: freeval_fn(testvs)}
+            # print(inputprms)
             test_range = Pi_mm_ranges_i(inputprms, i)
             left_ind, right_ind = slice_indices(test_range[2] | test_range[3])
             if (
@@ -301,7 +314,7 @@ def solution_regions_bin_search(
 
             testvs = np.concatenate([left_vs, right_vs])
 
-        fine_range = np.linspace(testvs[0], testvs[-1], m, endpoint=True)
+        fine_range = np.linspace(testvs[0], testvs[-1], params["m"], endpoint=True)
         fine_vals = Pi_mm_ranges_i(
             scaled_params | {freeparam: freeval_fn(fine_range)}, i
         )
@@ -313,6 +326,13 @@ def solution_regions_bin_search(
 
     return regions
 
+def find_left_boundary(paths, y_val, maxx):
+    xvals = np.linspace(0, maxx, 20)
+    points = np.stack([xvals, np.repeat(y_val, 20)], axis=1)
+    valids = np.ones(20, dtype=bool)
+    for path in paths:
+        valids &= ~path.contains_points(points)
+    return xvals[valids][1]
 
 def draw_solution_regions_bin(
     ax: plt.Axes, params: dict[str, float], progress_frame: tk.Frame
@@ -321,13 +341,6 @@ def draw_solution_regions_bin(
     try:
         regions = solution_regions_bin_search(
             params,
-            params["param_select"],
-            params["fmin"],
-            params["fmax"],
-            params["s_min"],
-            params["s_max"],
-            params["n"],
-            params["m"],
             progress_frame=progress_frame,
         )
     except Exception as e:
@@ -346,7 +359,7 @@ def draw_solution_regions_bin(
         ax.set_xticks([])
         ax.set_yticks([])
         return (False, e)
-
+    
     # Create two alternating colors for P and two for Z
     pcm = getattr(plt.cm, params["P_colormap"])
     zcm = getattr(plt.cm, params["Z_colormap"])
@@ -399,14 +412,14 @@ def draw_solution_regions_bin(
     )
     hat = None
     hatches = [None] * len(contours) + [hat] * len(contours_Z)
-    labels = [f"P_{i + 1}Z_{i}" for i, _ in enumerate(contours)] + [
+    _labels = [f"P_{i + 1}Z_{i}" for i, _ in enumerate(contours)] + [
         f"P_{i}Z_{i}" for i, _ in enumerate(contours_Z)
     ]
     contours += contours_Z
     levels = list(range(len(contours) + 1))
 
     # Create ContourSet with enhanced appearance
-    cs = ContourSet(
+    _cs = ContourSet(
         ax, levels, contours, filled=True, hatches=hatches, colors=colors, alpha=1.0
     )
 
@@ -418,7 +431,7 @@ def draw_solution_regions_bin(
         plt.Rectangle((0, 0), 1, 1, facecolor=zcm(params["Z_spread"] * 1.5), alpha=0.7, hatch=hat),
     ]
     legend_labels = ["P", "P", "Z", "Z"]
-    legend = ax.legend(
+    _legend = ax.legend(
         legend_patches,
         legend_labels,
         loc="upper right",  # Position in top right
@@ -461,6 +474,7 @@ def draw_solution_regions_bin(
         bbox=dict(facecolor="white", alpha=0.7),
     )
 
+    paths = [Path(contour[0]) for contour in contours]
     def on_mouse_move(event):
         if event.inaxes != ax:
             text = ""
@@ -468,8 +482,8 @@ def draw_solution_regions_bin(
             x, y = event.xdata, event.ydata
             text = ""
 
-            for i, contour in enumerate(contours):
-                if Path(contour[0]).contains_point((x, y)):
+            for i, path in enumerate(paths):
+                if path.contains_point((x, y)):
                     if i < len(contours) - len(contours_Z):
                         text = f"Solution type: #P={i + 1}, #Z={i}"
                     else:
@@ -485,7 +499,7 @@ def draw_solution_regions_bin(
     fig = ax.figure
     fig.canvas.mpl_connect("motion_notify_event", on_mouse_move)
 
-    return (True, ())
+    return (True, paths)
 
 
 def setup_buttons(params: dict[str, float], draw: Callable, parent: tk.Frame):
@@ -555,7 +569,7 @@ def setup_buttons(params: dict[str, float], draw: Callable, parent: tk.Frame):
     # Group parameters by base name
     param_groups = {}
     for param, value in params.items():
-        if param in ["r", "s_min", "s_max", "n", "m", "fmin", "fmax", "param_select", "P_colormap", "Z_colormap", "P_spread", "Z_spread"]:
+        if param in ["r", "s_min", "s_max", "n", "m", "fmin", "fmax", "param_select", "P_colormap", "Z_colormap", "P_spread", "Z_spread", "calc_lyap"]:
             continue
         base = param.split("_")[0]
         if base not in param_groups:
@@ -654,6 +668,130 @@ def setup_buttons(params: dict[str, float], draw: Callable, parent: tk.Frame):
 
     return boxes
 
+def setup_lyap_buttons(lyap_params: dict[str, float], draw_lyap: Callable, parent: tk.Frame):
+    boxes = {}
+    param_frame = tk.Frame(parent)
+    param_frame.pack(fill=tk.X, pady=10)
+    
+    # Add a label for the Lyapunov parameters section
+    tk.Label(param_frame, text="Lyapunov Parameters", font=("Arial", 10, "bold")).pack(pady=5)
+    
+    # Create a frame for the input fields
+    input_frame = tk.Frame(param_frame)
+    input_frame.pack(fill=tk.X, padx=5)
+    
+    # Add input fields for numx and numy
+    tk.Label(input_frame, text="numx:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=2)
+    numx_entry = tk.Entry(input_frame, width=10)
+    numx_entry.insert(0, str(lyap_params["numx"]))
+    numx_entry.grid(row=0, column=1, sticky=tk.W, padx=5, pady=2)
+    boxes["numx"] = numx_entry
+    
+    tk.Label(input_frame, text="numy:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=2)
+    numy_entry = tk.Entry(input_frame, width=10)
+    numy_entry.insert(0, str(lyap_params["numy"]))
+    numy_entry.grid(row=1, column=1, sticky=tk.W, padx=5, pady=2)
+    boxes["numy"] = numy_entry
+    
+    # Add a function to update lyap_params when values change
+    def update_lyap_params(event=None):
+        try:
+            lyap_params["numx"] = int(numx_entry.get())
+            lyap_params["numy"] = int(numy_entry.get())
+            numx_entry.config(bg="white")
+            numy_entry.config(bg="white")
+        except ValueError:
+            if event and event.widget == numx_entry:
+                numx_entry.config(bg="#FFB6C6")  # Light red for invalid input
+            if event and event.widget == numy_entry:
+                numy_entry.config(bg="#FFB6C6")  # Light red for invalid input
+    
+    # Bind the update function to the entry widgets
+    numx_entry.bind("<KeyRelease>", update_lyap_params)
+    numy_entry.bind("<KeyRelease>", update_lyap_params)
+    
+    # Add the render button
+    render_button = tk.Button(param_frame, text="Calculate Lyapunov", command=draw_lyap)
+    render_button.pack(pady=10)
+    boxes["render_button"] = render_button
+    
+    return boxes
+
+def open_color_config(root, params, draw_fn):
+    color_window = tk.Toplevel(root)
+    color_window.title("Color Configuration")
+    color_window.geometry("400x300")
+
+    def reverse_colormap(v: str) -> str:
+        if v.endswith("_r"):
+            return v[:-2]
+        else:
+            return v + "_r"
+
+    # Get list of available colormaps
+    colormaps = sorted([m for m in plt.colormaps() if not m.endswith("_r")])
+
+    # P colormap selection
+    p_frame = tk.Frame(color_window)
+    p_frame.pack(fill=tk.X, padx=10, pady=5)
+    tk.Label(p_frame, text="P Colormap:").pack(side=tk.LEFT)
+    p_colormap = ttk.Combobox(p_frame, values=colormaps, state="readonly")
+    p_colormap.set(params["P_colormap"])
+    p_colormap.pack(side=tk.LEFT, padx=5)
+
+    rev_button = tk.Button(
+        p_frame,
+        text="Reverse",
+        command=lambda: p_colormap.set(reverse_colormap(p_colormap.get())),
+    )
+    rev_button.pack(side=tk.LEFT, padx=5)
+
+    # P spread slider
+    p_spread_frame = tk.Frame(color_window)
+    p_spread_frame.pack(fill=tk.X, padx=10, pady=5)
+    tk.Label(p_spread_frame, text="P Spread:").pack(side=tk.LEFT)
+    p_spread = tk.Scale(
+        p_spread_frame, from_=0, to=0.5, orient=tk.HORIZONTAL, resolution=0.01
+    )
+    p_spread.set(params["P_spread"])
+    p_spread.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+
+    # Z colormap selection
+    z_frame = tk.Frame(color_window)
+    z_frame.pack(fill=tk.X, padx=10, pady=5)
+    tk.Label(z_frame, text="Z Colormap:").pack(side=tk.LEFT)
+    z_colormap = ttk.Combobox(z_frame, values=colormaps, state="readonly")
+    z_colormap.set(params["Z_colormap"])
+    z_colormap.pack(side=tk.LEFT, padx=5)
+
+    rev_button = tk.Button(
+        z_frame,
+        text="Reverse",
+        command=lambda: z_colormap.set(reverse_colormap(z_colormap.get())),
+    )
+    rev_button.pack(side=tk.LEFT, padx=5)
+
+    # Z spread slider
+    z_spread_frame = tk.Frame(color_window)
+    z_spread_frame.pack(fill=tk.X, padx=10, pady=5)
+    tk.Label(z_spread_frame, text="Z Spread:").pack(side=tk.LEFT)
+    z_spread = tk.Scale(
+        z_spread_frame, from_=0, to=0.5, orient=tk.HORIZONTAL, resolution=0.01
+    )
+    z_spread.set(params["Z_spread"])
+    z_spread.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+
+    def apply_changes():
+        params["P_colormap"] = p_colormap.get()
+        params["Z_colormap"] = z_colormap.get()
+        params["P_spread"] = float(p_spread.get())
+        params["Z_spread"] = float(z_spread.get())
+        draw_fn()
+        color_window.destroy()
+
+    # Apply button
+    apply_btn = tk.Button(color_window, text="Apply", command=apply_changes)
+    apply_btn.pack(pady=10)
 
 def parameter_domains_interactive():
     root = tk.Tk()
@@ -722,98 +860,26 @@ def parameter_domains_interactive():
         "P_spread": 0.3,
         "Z_spread": 0.3,
     }
-
-    def open_color_config():
-        color_window = tk.Toplevel(root)
-        color_window.title("Color Configuration")
-        color_window.geometry("400x300")
-
-        def reverse_colormap(v: str) -> str:
-            if v.endswith("_r"):
-                return v[:-2]
-            else:
-                return v + "_r"
-
-        # Get list of available colormaps
-        colormaps = sorted([m for m in plt.colormaps() if not m.endswith("_r")])
-
-        # P colormap selection
-        p_frame = tk.Frame(color_window)
-        p_frame.pack(fill=tk.X, padx=10, pady=5)
-        tk.Label(p_frame, text="P Colormap:").pack(side=tk.LEFT)
-        p_colormap = ttk.Combobox(p_frame, values=colormaps, state="readonly")
-        p_colormap.set(params["P_colormap"])
-        p_colormap.pack(side=tk.LEFT, padx=5)
-
-        rev_button = tk.Button(
-            p_frame,
-            text="Reverse",
-            command=lambda: p_colormap.set(reverse_colormap(p_colormap.get())),
-        )
-        rev_button.pack(side=tk.LEFT, padx=5)
-
-        # P spread slider
-        p_spread_frame = tk.Frame(color_window)
-        p_spread_frame.pack(fill=tk.X, padx=10, pady=5)
-        tk.Label(p_spread_frame, text="P Spread:").pack(side=tk.LEFT)
-        p_spread = tk.Scale(
-            p_spread_frame, from_=0, to=0.5, orient=tk.HORIZONTAL, resolution=0.01
-        )
-        p_spread.set(params["P_spread"])
-        p_spread.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-
-        # Z colormap selection
-        z_frame = tk.Frame(color_window)
-        z_frame.pack(fill=tk.X, padx=10, pady=5)
-        tk.Label(z_frame, text="Z Colormap:").pack(side=tk.LEFT)
-        z_colormap = ttk.Combobox(z_frame, values=colormaps, state="readonly")
-        z_colormap.set(params["Z_colormap"])
-        z_colormap.pack(side=tk.LEFT, padx=5)
-
-        rev_button = tk.Button(
-            z_frame,
-            text="Reverse",
-            command=lambda: z_colormap.set(reverse_colormap(z_colormap.get())),
-        )
-        rev_button.pack(side=tk.LEFT, padx=5)
-
-        # Z spread slider
-        z_spread_frame = tk.Frame(color_window)
-        z_spread_frame.pack(fill=tk.X, padx=10, pady=5)
-        tk.Label(z_spread_frame, text="Z Spread:").pack(side=tk.LEFT)
-        z_spread = tk.Scale(
-            z_spread_frame, from_=0, to=0.5, orient=tk.HORIZONTAL, resolution=0.01
-        )
-        z_spread.set(params["Z_spread"])
-        z_spread.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-
-        def apply_changes():
-            params["P_colormap"] = p_colormap.get()
-            params["Z_colormap"] = z_colormap.get()
-            params["P_spread"] = float(p_spread.get())
-            params["Z_spread"] = float(z_spread.get())
-            draw()
-            color_window.destroy()
-
-        # Apply button
-        apply_btn = tk.Button(color_window, text="Apply", command=apply_changes)
-        apply_btn.pack(pady=10)
-
+    # Create a container for the ode variable
+    plot_container = {"regions": None}
+    
     def draw():
         try:
             ax.clear()
-            success, err = draw_solution_regions_bin(ax, params, progress_frame)
+            success, value = draw_solution_regions_bin(ax, params, progress_frame)
+            plot_container["regions"] = value
+            # Let setup_jitcode decide if it needs to update
             fig.canvas.draw_idle()
             root.update_idletasks()
         except Exception as e:
             print(f"Error during draw: {e}")
 
     # Setup buttons in the right frame
-    boxes = setup_buttons(params, draw, right_frame)
+    setup_buttons(params, draw, right_frame)
 
     # Add color configuration button
     color_config_btn = tk.Button(
-        right_frame, text="Configure Colors", command=open_color_config
+        right_frame, text="Configure Colors", command=lambda : open_color_config(root, params, draw)
     )
     color_config_btn.pack(pady=5)
 
