@@ -480,6 +480,8 @@ def draw_solution_regions_bin(
         f"P_{i}Z_{i}" for i, _ in enumerate(contours_Z_s)
     ]
     hatches_s = ["\\" if i % 2 else "/" for i in range(len(contours_s))] + ["-" if i % 2 else "--" for i in range(len(contours_Z_s))]
+    stab_P = len(contours)
+    stab_Z = len(contours_Z)
     contours += contours_Z
     contours_s += contours_Z_s
     levels = list(range(len(contours_s) + 1))
@@ -488,7 +490,7 @@ def draw_solution_regions_bin(
     )
     # Create ContourSet with enhanced appearance
     _cs = ContourSet(
-        ax, levels[:len(contours)+1], contours, filled=True, hatches=hatches, colors=colors, alpha=1.0
+        ax, levels[:stab_P+1] + levels[params["n"]:params["n"]+stab_Z], contours, filled=True, hatches=hatches, colors=colors[:stab_P] + colors[params["n"]:params["n"]+stab_Z], alpha=1.0
     )
 
 
@@ -553,10 +555,10 @@ def draw_solution_regions_bin(
 
             for i, path in enumerate(paths):
                 if path.contains_point((x, y)):
-                    if i < len(contours) - len(contours_Z):
+                    if i < len(contours_s) - len(contours_Z_s):
                         text = f"Solution type: #P={i + 1}, #Z={i}"
                     else:
-                        z_idx = i - (len(contours) - len(contours_Z))
+                        z_idx = i - (len(contours_s) - len(contours_Z_s))
                         text = f"Solution type: #P={z_idx}, #Z={z_idx}"
                     break
 
