@@ -30,3 +30,4 @@ To start the application we can follow the following steps:
     ```
 
 ## Usage
+Usage of the tool is given under the parameter input box.
