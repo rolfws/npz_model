@@ -108,6 +108,21 @@ def Pi_mm_ranges_i(params, i):
     )
     return (N_min, N_max, stabl, stabr)
 
+def Pi_mm_ranges_i_no_stab(params, i):
+    Pc, N, Zi = Pi_N_Zi_vals(params, i) # [N, i]
+    a = (Zi[..., :i] * params["ds"][:i] * params["r"]).sum(-1) + (
+        Pc[..., :i] * params["ds"][:i]
+    ).sum(-1)
+    N_min = a + N.reshape(-1)
+    N_max = (
+        N_min
+        + params["delta"][..., i]
+        * params["K"][..., i]
+        / (params["gamma"][..., i] * params["g"][..., i] - params["delta"][..., i])
+        * params["ds"][i]
+    )
+    return (N_min, N_max)
+
 
 def slice_indices(bool_arr: np.ndarray[bool]):
     if not np.any(bool_arr):
@@ -274,7 +289,7 @@ def solution_regions_bin_search(
 ):
     progress_bar = ttk.Progressbar(progress_frame, length=200, mode="determinate")
     progress_bar.pack()
-    progress_label = tk.Label(progress_frame, text="Calculating regions...")
+    progress_label = tk.Label(progress_frame, text="Calculating stability regions...")
     progress_label.pack()
     freeparam, scaled_params, freeval_fn = get_param_dict(params, brd)
     regions = []
@@ -325,6 +340,30 @@ def solution_regions_bin_search(
         progress_label.destroy()
 
     return regions
+def solution_regions_no_stab(
+        params:dict[str, float],
+        brd="m",
+        progress_frame:tk.Frame=None,
+):
+    progress_bar = ttk.Progressbar(progress_frame, length=200, mode="determinate")
+    progress_bar.pack()
+    progress_label = tk.Label(progress_frame, text="Calculating stationary regions...")
+    progress_label.pack()
+    freeparam, scaled_params, freeval_fn = get_param_dict(params, brd)
+    regions = []
+    for i in range(params["n"]):
+        progress_bar["value"] = (i / params["n"]) * 100
+        progress_frame.update()
+        testvs = np.linspace(params["fmin"], params["fmax"], params["m"], endpoint=True)
+        fine_vals = Pi_mm_ranges_i_no_stab(
+            scaled_params | {freeparam: freeval_fn(testvs)}, i
+        )
+        regions.append(fine_vals + (testvs,))
+
+    if progress_frame:
+        progress_bar.destroy()
+        progress_label.destroy()
+    return regions
 
 def find_left_boundary(paths, y_val, maxx):
     xvals = np.linspace(0, maxx, 20)
@@ -340,6 +379,10 @@ def draw_solution_regions_bin(
     ax.cla()
     try:
         regions = solution_regions_bin_search(
+            params,
+            progress_frame=progress_frame,
+        )
+        regions_no_stab = solution_regions_no_stab(
             params,
             progress_frame=progress_frame,
         )
@@ -374,6 +417,7 @@ def draw_solution_regions_bin(
         zcm(np.linspace(spread, 2 * spread, params["n"])),
     ]
 
+    # Stable contours
     contours = []
     contours_Z = []
     # Add first region (P0Z0)
@@ -403,25 +447,51 @@ def draw_solution_regions_bin(
                 )
             )
             contours_Z.append([poly_Z])
-
+    # Stationary contours
+    contours_s = []
+    contours_Z_s = []
+    poly_zero_s = list(zip(np.zeros_like(regions_no_stab[0][0]), regions_no_stab[0][-1])) + list(
+        zip(regions_no_stab[0][0][::-1], regions_no_stab[0][-1][::-1])
+    )
+    contours_Z_s.append([poly_zero_s])
+    for i in range(len(regions_no_stab)):
+        poly_P_s = list(
+            zip(regions_no_stab[i][0], regions_no_stab[i][-1])
+        ) + list(
+            zip(regions_no_stab[i][1][::-1], regions_no_stab[i][-1][::-1])
+        )
+        contours_s.append([poly_P_s])
+        if i != len(regions_no_stab) - 1:
+            poly_Z_s = list(
+                zip(regions_no_stab[i][1], regions_no_stab[i][-1])
+            ) + list(
+                zip(regions_no_stab[i + 1][0][::-1], regions_no_stab[i + 1][-1][::-1])
+            )
+            contours_Z_s.append([poly_Z_s])
     # Alternate colors for P and Z regions
     colors = (
-        [P_colors[i % 2][i] for i in range(len(contours))]
+        [P_colors[i % 2][i] for i in range(len(contours_s))]
         + [plt.cm.Greys(0.9)]
-        + [Z_colors[i % 2][i] for i in range(1, len(contours_Z))]
+        + [Z_colors[i % 2][i] for i in range(1, len(contours_Z_s))]
     )
     hat = None
     hatches = [None] * len(contours) + [hat] * len(contours_Z)
-    _labels = [f"P_{i + 1}Z_{i}" for i, _ in enumerate(contours)] + [
-        f"P_{i}Z_{i}" for i, _ in enumerate(contours_Z)
+    _labels = [f"P_{i + 1}Z_{i}" for i, _ in enumerate(contours_s)] + [
+        f"P_{i}Z_{i}" for i, _ in enumerate(contours_Z_s)
     ]
+    hatches_s = ["\\" if i % 2 else "/" for i in range(len(contours_s))] + ["-" if i % 2 else "--" for i in range(len(contours_Z_s))]
     contours += contours_Z
-    levels = list(range(len(contours) + 1))
+    contours_s += contours_Z_s
+    levels = list(range(len(contours_s) + 1))
 
+    _cs_s = ContourSet(
+        ax, levels, contours_s, filled=True, hatches=hatches_s,colors=colors, alpha=.5
+    )
     # Create ContourSet with enhanced appearance
     _cs = ContourSet(
         ax, levels, contours, filled=True, hatches=hatches, colors=colors, alpha=1.0
     )
+
 
     # Create legend with the four color types
     legend_patches = [
@@ -474,7 +544,7 @@ def draw_solution_regions_bin(
         bbox=dict(facecolor="white", alpha=0.7),
     )
 
-    paths = [Path(contour[0]) for contour in contours]
+    paths = [Path(contour[0]) for contour in contours_s]
     def on_mouse_move(event):
         if event.inaxes != ax:
             text = ""
@@ -655,14 +725,30 @@ def setup_buttons(params: dict[str, float], draw: Callable, parent: tk.Frame):
     boxes["render_button"] = render_button
 
     # Add explanatory text
-    help_text = (
-        "Colors:\n"
-        "• White - Unchanged value\n"
-        "• Green - Confirmed change\n"
-        "• Red - Invalid input\n\n"
-        "Shortcuts:\n"
-        "• Ctrl+Enter - To render\n\n"
-    )
+    help_text = """
+Inputs:
+The select box is the varied parameter.
+Its range is given by the fmin/fmax, 
+m is the number of points in that range.
+The s min/max is the size range,
+n the divisions.
+The remaining are input parameters.
+
+Input colors:
+• White - Unchanged value
+• Green - Confirmed change
+• Red - Invalid input
+
+Plot colors:
+The solid regions are stable regions,
+the dashed regions are unstable.
+The color map can be configured
+in the Configure Colors button.
+
+Shortcuts:
+• Ctrl+Enter - To render
+
+"""
     help_label = tk.Label(param_frame, text=help_text, justify=tk.LEFT, anchor="w")
     help_label.pack(pady=10, padx=5)
 
