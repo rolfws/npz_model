@@ -483,13 +483,12 @@ def draw_solution_regions_bin(
     contours += contours_Z
     contours_s += contours_Z_s
     levels = list(range(len(contours_s) + 1))
-
     _cs_s = ContourSet(
         ax, levels, contours_s, filled=True, hatches=hatches_s,colors=colors, alpha=.5
     )
     # Create ContourSet with enhanced appearance
     _cs = ContourSet(
-        ax, levels, contours, filled=True, hatches=hatches, colors=colors, alpha=1.0
+        ax, levels[:len(contours)+1], contours, filled=True, hatches=hatches, colors=colors, alpha=1.0
     )
 
 
@@ -752,55 +751,6 @@ Shortcuts:
     help_label = tk.Label(param_frame, text=help_text, justify=tk.LEFT, anchor="w")
     help_label.pack(pady=10, padx=5)
 
-    return boxes
-
-def setup_lyap_buttons(lyap_params: dict[str, float], draw_lyap: Callable, parent: tk.Frame):
-    boxes = {}
-    param_frame = tk.Frame(parent)
-    param_frame.pack(fill=tk.X, pady=10)
-    
-    # Add a label for the Lyapunov parameters section
-    tk.Label(param_frame, text="Lyapunov Parameters", font=("Arial", 10, "bold")).pack(pady=5)
-    
-    # Create a frame for the input fields
-    input_frame = tk.Frame(param_frame)
-    input_frame.pack(fill=tk.X, padx=5)
-    
-    # Add input fields for numx and numy
-    tk.Label(input_frame, text="numx:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=2)
-    numx_entry = tk.Entry(input_frame, width=10)
-    numx_entry.insert(0, str(lyap_params["numx"]))
-    numx_entry.grid(row=0, column=1, sticky=tk.W, padx=5, pady=2)
-    boxes["numx"] = numx_entry
-    
-    tk.Label(input_frame, text="numy:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=2)
-    numy_entry = tk.Entry(input_frame, width=10)
-    numy_entry.insert(0, str(lyap_params["numy"]))
-    numy_entry.grid(row=1, column=1, sticky=tk.W, padx=5, pady=2)
-    boxes["numy"] = numy_entry
-    
-    # Add a function to update lyap_params when values change
-    def update_lyap_params(event=None):
-        try:
-            lyap_params["numx"] = int(numx_entry.get())
-            lyap_params["numy"] = int(numy_entry.get())
-            numx_entry.config(bg="white")
-            numy_entry.config(bg="white")
-        except ValueError:
-            if event and event.widget == numx_entry:
-                numx_entry.config(bg="#FFB6C6")  # Light red for invalid input
-            if event and event.widget == numy_entry:
-                numy_entry.config(bg="#FFB6C6")  # Light red for invalid input
-    
-    # Bind the update function to the entry widgets
-    numx_entry.bind("<KeyRelease>", update_lyap_params)
-    numy_entry.bind("<KeyRelease>", update_lyap_params)
-    
-    # Add the render button
-    render_button = tk.Button(param_frame, text="Calculate Lyapunov", command=draw_lyap)
-    render_button.pack(pady=10)
-    boxes["render_button"] = render_button
-    
     return boxes
 
 def open_color_config(root, params, draw_fn):
